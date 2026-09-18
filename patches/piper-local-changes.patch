@@ -1,0 +1,99 @@
+diff --git a/src/piper/train/__main__.py b/src/piper/train/__main__.py
+index e07c799..0108898 100644
+--- a/src/piper/train/__main__.py
++++ b/src/piper/train/__main__.py
+@@ -1,6 +1,11 @@
+ import logging
++from pathlib import PosixPath
+ 
+ import torch
++
++# Legacy/trusted Piper checkpoints may contain pathlib.PosixPath in
++# hyperparameters. LightningCLI pre-loads ckpt_path with weights_only=True.
++torch.serialization.add_safe_globals([PosixPath])
+ from lightning.pytorch.callbacks import ModelCheckpoint
+ from lightning.pytorch.cli import LightningCLI
+ 
+@@ -21,25 +26,11 @@ _MONITOR = "val_mel"
+ 
+ _DEFAULT_CALLBACKS = [
+     ModelCheckpoint(
+-        monitor=_MONITOR,
+-        mode="min",
+-        save_top_k=5,
++        monitor=None,
++        save_top_k=-1,
+         save_last=True,
+-        filename="epoch={epoch}-val_mel={val_mel:.4f}",
+-        auto_insert_metric_name=False,
+-    ),
+-    # Also keep the best-by-perceptual-quality checkpoints. "val_mos" (UTMOS)
+-    # tracks audible artifacts that mel L1 misses, so its winner is often the
+-    # better-sounding model. If the MOS predictor can't be loaded, val_mos is
+-    # never logged and this callback simply finds nothing to save (Lightning
+-    # warns once and skips) -- it does not interfere with the val_mel/last
+-    # checkpoints above. No save_last here to avoid clobbering last.ckpt.
+-    ModelCheckpoint(
+-        monitor="val_mos",
+-        mode="max",
+-        save_top_k=5,
+-        save_last=False,
+-        filename="epoch={epoch}-val_mos={val_mos:.4f}",
++        every_n_epochs=1000,
++        filename="epoch={epoch}-step={step}",
+         auto_insert_metric_name=False,
+     ),
+ ]
+diff --git a/src/piper/train/export_onnx.py b/src/piper/train/export_onnx.py
+index 96f2872..b95f664 100644
+--- a/src/piper/train/export_onnx.py
++++ b/src/piper/train/export_onnx.py
+@@ -95,6 +95,7 @@ def main() -> None:
+         f=output_path,
+         verbose=False,
+         opset_version=OPSET_VERSION,
++        dynamo=False,
+         input_names=["input", "input_lengths", "scales", "sid"],
+         output_names=["output"],
+         dynamic_axes={
+diff --git a/src/piper/train/vits/lightning.py b/src/piper/train/vits/lightning.py
+index dad0dce..f7eb313 100644
+--- a/src/piper/train/vits/lightning.py
++++ b/src/piper/train/vits/lightning.py
+@@ -331,6 +331,16 @@ class VitsModel(L.LightningModule):
+         self.manual_backward(loss_d)
+         opt_d.step()
+ 
++    def on_train_epoch_end(self):
++        # Legacy Piper behaviour: step both ExponentialLR schedulers
++        # exactly once per completed training epoch.
++        schedulers = self.lr_schedulers()
++        if isinstance(schedulers, (list, tuple)):
++            for scheduler in schedulers:
++                scheduler.step()
++        else:
++            schedulers.step()
++
+     def validation_step(self, batch: Batch, batch_idx: int):
+         loss_g, _loss_d, metrics = self._compute_loss(batch)
+         val_loss = loss_g  # kept for backwards compatibility
+@@ -482,7 +492,18 @@ class VitsModel(L.LightningModule):
+         )
+ 
+     def on_fit_start(self):
+-        # Called once at the start of fit()
++        # Never warmstart when resuming a Lightning checkpoint.
++        # A full resume has already restored the trained model/optimizer state.
++        if getattr(self.trainer, "ckpt_path", None):
++            self._vocoder_warmstart_ckpt = None
++            self._warmstart_ckpt = None
++            _LOGGER.info(
++                "[warmstart] Skipped because training is resuming from %s",
++                self.trainer.ckpt_path,
++            )
++            return
++
++        # Called once at the start of a fresh fit()
+         if self._vocoder_warmstart_ckpt is not None:
+             # Make sure we're on the correct device
+             self._warmstart_vocoder_from_ckpt(self._vocoder_warmstart_ckpt)

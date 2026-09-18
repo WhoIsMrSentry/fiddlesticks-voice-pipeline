@@ -1,0 +1,39 @@
+# datasets
+dataset/
+datasets/
+wavs/
+raw/
+review/
+transcripts/
+final_dataset*/
+*.wav
+*.flac
+*.mp3
+
+# models
+*.ckpt
+*.onnx
+*.pth
+*.pt
+*.bin
+*.safetensors
+
+# training output
+lightning_logs/
+logs/
+cache*/
+checkpoints/
+test_*/
+milestones/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# editor/os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
